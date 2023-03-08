@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DEFAULT_LLVM_REPOSITORY: &str = "https://github.com/espressif/llvm-project/releases/download";
+const DEFAULT_LLVM_REPOSITORY: &str = "https://ghproxy.com/https://github.com/espressif/llvm-project/releases/download";
 const DEFAULT_LLVM_15_VERSION: &str = "esp-15.0.0-20221201";
 pub const CLANG_NAME: &str = "xtensa-esp32-elf-clang";
 
