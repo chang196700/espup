@@ -11,8 +11,8 @@ use std::{
 };
 #[cfg(windows)]
 use winreg::{
-    enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
     RegKey,
+    enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
 };
 
 #[cfg(windows)]
@@ -26,7 +26,7 @@ pub fn set_env_variable(key: &str, value: &str) -> Result<(), Error> {
     use std::ptr;
     use winapi::shared::minwindef::*;
     use winapi::um::winuser::{
-        SendMessageTimeoutA, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutA, WM_SETTINGCHANGE,
     };
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -40,7 +40,7 @@ pub fn set_env_variable(key: &str, value: &str) -> Result<(), Error> {
             HWND_BROADCAST,
             WM_SETTINGCHANGE,
             0 as WPARAM,
-            "Environment\0".as_ptr() as LPARAM,
+            c"Environment".as_ptr() as LPARAM,
             SMTO_ABORTIFHUNG,
             5000,
             ptr::null_mut(),
@@ -61,7 +61,9 @@ pub fn delete_env_variable(key: &str) -> Result<(), Error> {
         return Ok(());
     }
 
-    env::remove_var(key);
+    unsafe {
+        env::remove_var(key);
+    }
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let environment_key = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
@@ -113,43 +115,52 @@ pub fn get_windows_path_var() -> Result<String, Error> {
 }
 
 #[cfg(windows)]
-/// Instructions to export the environment variables.
+/// Persists toolchain environment variables for the current Windows user.
 pub fn set_env() -> Result<(), Error> {
-    let mut path = get_windows_path_var()?;
+    persist_windows_env(
+        get_windows_path_var()?,
+        |key| env::var(key).ok(),
+        set_env_variable,
+    )
+}
 
-    if let Ok(xtensa_gcc) = env::var("XTENSA_GCC") {
+// Keep registry writes injectable so persistence can be tested without changing the host.
+#[cfg(any(windows, test))]
+fn persist_windows_env(
+    mut path: String,
+    get_variable: impl Fn(&str) -> Option<String>,
+    mut set_variable: impl FnMut(&str, &str) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if let Some(xtensa_gcc) = get_variable("XTENSA_GCC") {
         let xtensa_gcc: &str = &xtensa_gcc;
         if !path.contains(xtensa_gcc) {
-            path = format!("{};{}", xtensa_gcc, path);
+            path = format!("{xtensa_gcc};{path}");
         }
     }
 
-    if let Ok(riscv_gcc) = env::var("RISCV_GCC") {
+    if let Some(riscv_gcc) = get_variable("RISCV_GCC") {
         let riscv_gcc: &str = &riscv_gcc;
         if !path.contains(riscv_gcc) {
-            path = format!("{};{}", riscv_gcc, path);
+            path = format!("{riscv_gcc};{path}");
         }
     }
 
-    if let Ok(libclang_path) = env::var("LIBCLANG_PATH") {
-        set_env_variable("LIBCLANG_PATH", &libclang_path)?;
+    if let Some(libclang_path) = get_variable("LIBCLANG_PATH") {
+        set_variable("LIBCLANG_PATH", &libclang_path)?;
     }
 
-    if let Ok(libclang_bin_path) = env::var("LIBCLANG_BIN_PATH") {
+    if let Some(libclang_bin_path) = get_variable("LIBCLANG_BIN_PATH") {
         let libclang_bin_path: &str = &libclang_bin_path;
         if !path.contains(libclang_bin_path) {
-            path = format!("{};{}", libclang_bin_path, path);
+            path = format!("{libclang_bin_path};{path}");
         }
     }
 
-    if let Ok(clang_path) = env::var("CLANG_PATH") {
-        let clang_path: &str = &clang_path;
-        if !path.contains(clang_path) {
-            path = format!("{};{}", clang_path, path);
-        }
+    if let Some(clang_path) = get_variable("CLANG_PATH") {
+        set_variable("CLANG_PATH", &clang_path)?;
     }
 
-    set_env_variable("PATH", &path)?;
+    set_variable("PATH", &path)?;
     Ok(())
 }
 
@@ -164,7 +175,9 @@ pub fn print_post_install_msg(export_file: &Path) -> Result<(), Error> {
             "\tA file was created at '{}' showing the injected environment variables",
             export_file.display()
         );
-        println!("\tIf you get still get errors, try manually adding the environment variables by running '{}'", export_file.display()
+        println!(
+            "\tIf you get still get errors, try manually adding the environment variables by running '{}'",
+            export_file.display()
         );
     }
     #[cfg(unix)]
@@ -174,7 +187,7 @@ pub fn print_post_install_msg(export_file: &Path) -> Result<(), Error> {
             export_file.display()
         );
         println!(
-            "\tThis step must be done every time you open a new terminal.\n\t    See other methods for setting the environment in https://esp-rs.github.io/book/installation/riscv-and-xtensa.html#3-set-up-the-environment-variables",
+            "\tThis step must be done every time you open a new terminal.\n\t    See other methods for setting the environment in https://github.com/esp-rs/espup/?tab=readme-ov-file#environment-variables-setup",
         );
     }
     Ok(())
@@ -182,7 +195,10 @@ pub fn print_post_install_msg(export_file: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use crate::env::{create_export_file, get_export_file, DEFAULT_EXPORT_FILE};
+    use crate::{
+        env::{DEFAULT_EXPORT_FILE, create_export_file, get_export_file, persist_windows_env},
+        error::Error,
+    };
     use directories::BaseDirs;
     use std::{
         env::current_dir,
@@ -192,27 +208,87 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    #[allow(unused_variables)]
+    fn windows_clang_path_is_persisted_as_a_variable_not_a_path_entry() {
+        let variables = std::collections::HashMap::from([
+            ("CLANG_PATH", r"C:\esp\bin\clang.exe"),
+            ("LIBCLANG_PATH", r"C:\esp\bin\libclang.dll"),
+            ("LIBCLANG_BIN_PATH", r"C:\esp\bin"),
+            ("XTENSA_GCC", r"C:\gcc\bin"),
+        ]);
+        let mut written = std::collections::HashMap::new();
+        persist_windows_env(
+            "existing".into(),
+            |key| variables.get(key).map(|value| value.to_string()),
+            |key, value| {
+                written.insert(key.to_string(), value.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(written["CLANG_PATH"], variables["CLANG_PATH"]);
+        assert_eq!(written["LIBCLANG_PATH"], variables["LIBCLANG_PATH"]);
+        assert_eq!(written["PATH"], r"C:\esp\bin;C:\gcc\bin;existing");
+        assert!(!written["PATH"].contains("clang.exe"));
+    }
+
+    #[test]
+    fn missing_windows_variables_leave_path_unchanged() {
+        let mut written = Vec::new();
+        persist_windows_env(
+            "existing".into(),
+            |_| None,
+            |key, value| {
+                written.push((key.to_string(), value.to_string()));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(written, [("PATH".into(), "existing".into())]);
+    }
+
+    #[test]
+    fn windows_variable_write_errors_are_propagated() {
+        let result = persist_windows_env(
+            "existing".into(),
+            |key| (key == "CLANG_PATH").then(|| "clang.exe".into()),
+            |key, _| {
+                assert_eq!(key, "CLANG_PATH");
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+            },
+        );
+        assert!(
+            matches!(result, Err(Error::IoError(err)) if err.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+    }
+
+    #[test]
     fn test_get_export_file() {
         // No arg provided
         let home_dir = BaseDirs::new().unwrap().home_dir().to_path_buf();
-        let export_file = home_dir.join(DEFAULT_EXPORT_FILE);
-        assert!(matches!(get_export_file(None), Ok(export_file)));
+        assert_eq!(
+            get_export_file(None).unwrap(),
+            home_dir.join(DEFAULT_EXPORT_FILE)
+        );
+
         // Relative path
-        let current_dir = current_dir().unwrap();
-        let export_file = current_dir.join("export.sh");
-        assert!(matches!(
-            get_export_file(Some(PathBuf::from("export.sh"))),
-            Ok(export_file)
-        ));
+        assert_eq!(
+            get_export_file(Some(PathBuf::from("export.sh"))).unwrap(),
+            current_dir().unwrap().join("export.sh")
+        );
+
         // Absolute path
-        let export_file = PathBuf::from("/home/user/export.sh");
-        assert!(matches!(
-            get_export_file(Some(PathBuf::from("/home/user/export.sh"))),
-            Ok(export_file)
-        ));
+        let absolute = if cfg!(windows) {
+            PathBuf::from(r"C:\home\user\export.ps1")
+        } else {
+            PathBuf::from("/home/user/export.sh")
+        };
+        assert_eq!(get_export_file(Some(absolute.clone())).unwrap(), absolute);
+
         // Path is a directory instead of a file
-        assert!(get_export_file(Some(home_dir)).is_err());
+        assert!(matches!(
+            get_export_file(Some(home_dir)),
+            Err(Error::InvalidDestination(_))
+        ));
     }
 
     #[test]

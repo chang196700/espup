@@ -16,7 +16,11 @@ pub enum Target {
     /// RISC-V based single core
     ESP32C3,
     /// RISC-V based single core
+    ESP32C5,
+    /// RISC-V based single core
     ESP32C6,
+    /// RISC-V based single core
+    ESP32C61,
     /// RISC-V based single core
     ESP32H2,
     /// Xtensa LX7 based single core
@@ -41,7 +45,7 @@ impl Target {
 
 /// Returns a vector of Chips from a comma or space separated string.
 pub fn parse_targets(targets_str: &str) -> Result<HashSet<Target>, Error> {
-    debug!("Parsing targets: {}", targets_str);
+    debug!("Parsing targets: {targets_str}");
 
     let targets_str = targets_str.to_lowercase();
     let targets_str = targets_str.trim();
@@ -59,43 +63,49 @@ pub fn parse_targets(targets_str: &str) -> Result<HashSet<Target>, Error> {
         targets
     };
 
-    debug!("Parsed targets: {:?}", targets);
+    debug!("Parsed targets: {targets:?}");
     Ok(targets)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::targets::{parse_targets, Target};
+    use crate::{
+        error::Error,
+        targets::{Target, parse_targets},
+    };
     use std::collections::HashSet;
+    use strum::IntoEnumIterator;
 
     #[test]
-    #[allow(unused_variables)]
     fn test_parse_targets() {
-        let targets: HashSet<Target> = [Target::ESP32].into_iter().collect();
-        assert!(matches!(parse_targets("esp32"), Ok(targets)));
-        let targets: HashSet<Target> = [Target::ESP32, Target::ESP32S2].into_iter().collect();
-        assert!(matches!(parse_targets("esp32,esp32s2"), Ok(targets)));
-        let targets: HashSet<Target> = [Target::ESP32S3, Target::ESP32].into_iter().collect();
-        assert!(matches!(parse_targets("esp32s3 esp32"), Ok(targets)));
-        let targets: HashSet<Target> = [Target::ESP32S3, Target::ESP32, Target::ESP32C3]
-            .into_iter()
-            .collect();
-        assert!(matches!(
-            parse_targets("esp32s3,esp32,esp32c3"),
-            Ok(targets)
-        ));
-        let targets: HashSet<Target> = [
-            Target::ESP32,
-            Target::ESP32C2,
-            Target::ESP32C3,
-            Target::ESP32C6,
-            Target::ESP32H2,
-            Target::ESP32S2,
-            Target::ESP32S3,
-            Target::ESP32P4,
-        ]
-        .into_iter()
-        .collect();
-        assert!(matches!(parse_targets("all"), Ok(targets)));
+        for (input, expected) in [
+            ("esp32", vec![Target::ESP32]),
+            ("esp32,esp32s2", vec![Target::ESP32, Target::ESP32S2]),
+            ("esp32s3 esp32", vec![Target::ESP32S3, Target::ESP32]),
+            (
+                "esp32s3,esp32,esp32c3",
+                vec![Target::ESP32S3, Target::ESP32, Target::ESP32C3],
+            ),
+        ] {
+            assert_eq!(
+                parse_targets(input).unwrap(),
+                expected.into_iter().collect::<HashSet<_>>()
+            );
+        }
+
+        let all_targets: HashSet<Target> = Target::iter().collect();
+        assert_eq!(parse_targets("all").unwrap(), all_targets);
+        assert_eq!(parse_targets("ALL").unwrap(), all_targets);
+        assert_eq!(
+            parse_targets("esp32,esp32").unwrap(),
+            [Target::ESP32].into_iter().collect()
+        );
+
+        for input in ["", "esp32,", "esp32  esp32s2", "unknown"] {
+            assert!(
+                matches!(parse_targets(input), Err(Error::UnsupportedTarget(_))),
+                "{input:?}"
+            );
+        }
     }
 }

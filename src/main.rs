@@ -3,12 +3,12 @@ use espup::{
     cli::{CompletionsOpts, InstallOpts, UninstallOpts},
     logging::initialize_logger,
     toolchain::{
+        InstallMode,
         gcc::uninstall_gcc_toolchains,
         install as toolchain_install,
         llvm::Llvm,
         remove_dir,
-        rust::{get_rustup_home, XtensaRust},
-        InstallMode,
+        rust::{XtensaRust, get_toolchain_path},
     },
     update::check_for_update,
 };
@@ -43,7 +43,8 @@ async fn completions(args: CompletionsOpts) -> Result<()> {
 
     info!("Generating completions for {} shell", args.shell);
 
-    clap_complete::generate(args.shell, &mut Cli::command(), "espup", &mut stdout());
+    args.shell
+        .generate(&mut Cli::command(), "espup", &mut stdout());
 
     info!("Completions successfully generated!");
 
@@ -61,16 +62,16 @@ async fn install(args: InstallOpts, install_mode: InstallMode) -> Result<()> {
 
 /// Uninstalls the Rust for ESP chips environment
 async fn uninstall(args: UninstallOpts) -> Result<()> {
+    let toolchain_dir = get_toolchain_path(&args.name)?;
     initialize_logger(&args.log_level);
     check_for_update(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     info!("Uninstalling the Espressif Rust ecosystem");
-    let toolchain_dir = get_rustup_home().join("toolchains").join(args.name);
 
     if toolchain_dir.exists() {
         Llvm::uninstall(&toolchain_dir).await?;
 
-        uninstall_gcc_toolchains(&toolchain_dir).await?;
+        uninstall_gcc_toolchains(&toolchain_dir, args.crosstool_toolchain_version).await?;
 
         XtensaRust::uninstall(&toolchain_dir).await?;
 

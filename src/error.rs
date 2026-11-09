@@ -7,8 +7,24 @@ pub enum Error {
     CreateDirectory(String),
 
     #[diagnostic(code(espup::toolchain::rust::query_github))]
-    #[error("Failed to query GitHub API")]
-    GithubQuery,
+    #[error(
+        "Failed to query GitHub API: rate limit exceeded. Wait for the limit to reset or set `GITHUB_TOKEN` to a valid GitHub token"
+    )]
+    GithubRateLimit,
+
+    #[diagnostic(code(espup::toolchain::rust::query_github))]
+    #[error(
+        "Failed to query GitHub API: invalid `GITHUB_TOKEN`. Unset it or set it to a valid GitHub token"
+    )]
+    GithubTokenInvalid,
+
+    #[diagnostic(code(espup::toolchain::rust::query_github))]
+    #[error("Failed to connect to GitHub API: {0}")]
+    GithubConnectivityError(String),
+
+    #[diagnostic(code(espup::toolchain::http_error))]
+    #[error("HTTP GET Error: {0}")]
+    HttpError(String),
 
     #[diagnostic(code(espup::toolchain::rust::install_riscv_target))]
     #[error("Failed to Install RISC-V targets for '{0}' toolchain")]
@@ -16,16 +32,44 @@ pub enum Error {
 
     #[diagnostic(code(espup::ivalid_destination))]
     #[error(
-        "Invalid export file destination: '{0}'. Please, use an absolute or releative path (including the file and its extension)")]
+        "Invalid export file destination: '{0}'. Please, use an absolute or releative path (including the file and its extension)"
+    )]
     InvalidDestination(String),
+
+    #[diagnostic(code(espup::toolchain::invalid_download_name))]
+    #[error("Invalid download file name: '{0}'")]
+    InvalidDownloadName(String),
 
     #[diagnostic(code(espup::toolchain::rust::invalid_version))]
     #[error(
-        "Invalid toolchain version '{0}'. Verify that the format is correct: '<major>.<minor>.<patch>.<subpatch>' or '<major>.<minor>.<patch>', and that the release exists in https://github.com/esp-rs/rust-build/releases")]
+        "Invalid toolchain version '{0}'. Verify that the format is correct: '<major>.<minor>.<patch>.<subpatch>' or '<major>.<minor>.<patch>', and that the release exists in https://github.com/esp-rs/rust-build/releases"
+    )]
     InvalidVersion(String),
+
+    #[diagnostic(code(espup::toolchain::rust::invalid_name))]
+    #[error(
+        "Invalid toolchain name '{0}': expected a single directory name without path separators"
+    )]
+    InvalidToolchainName(String),
+
+    #[diagnostic(code(espup::toolchain::gcc::invalid_version))]
+    #[error(
+        "Invalid GCC toolchain version '{0}': expected a release version such as '15.2.0_20250920'"
+    )]
+    InvalidGccVersion(String),
+
+    #[diagnostic(code(espup::toolchain::rust::version_not_found))]
+    #[error(
+        "The toolchain version '{0}' was not found. Verify that the release exists in https://github.com/esp-rs/rust-build/releases"
+    )]
+    VersionNotFound(String),
 
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    #[diagnostic(code(espup::toolchain::install_task))]
+    #[error("Installer task failed: {0}")]
+    InstallTask(#[from] tokio::task::JoinError),
 
     #[diagnostic(code(espup::toolchain::rust::missing_rust))]
     #[error("Rust is not installed. Please, install Rust via rustup: https://rustup.rs/")]
@@ -34,6 +78,13 @@ pub enum Error {
     #[diagnostic(code(espup::remove_directory))]
     #[error("Failed to remove '{0}'")]
     RemoveDirectory(String),
+
+    #[error(transparent)]
+    ZipError(#[from] zip::result::ZipError),
+
+    #[diagnostic(code(espup::toolchain::unsafe_archive_path))]
+    #[error("Archive entry '{0}' contains an unsafe path")]
+    UnsafeArchivePath(String),
 
     #[error(transparent)]
     RewquestError(#[from] reqwest::Error),

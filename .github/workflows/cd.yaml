@@ -18,25 +18,26 @@ jobs:
         job:
           - os: macos-latest
             target: x86_64-apple-darwin
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary-postfix: ".exe"
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary-postfix: ".exe"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.job.target }}
-      - name: Enable caching
-        uses: Swatinem/rust-cache@v2
       - name: Publish (dry-run)
         if: matrix.job.target == 'x86_64-unknown-linux-gnu'
         run: cargo publish --dry-run
@@ -49,10 +50,10 @@ jobs:
         if: matrix.job.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.job.target }}
       - name: Compress (Unix)
-        if: ${{ matrix.job.os != 'windows-latest' }}
+        if: runner.os != 'Windows'
         run: zip -j espup-${{ matrix.job.target }}.zip target/${{ matrix.job.target }}/release/espup${{ matrix.job.binary-postfix }}
       - name: Compress (Windows)
-        if: ${{ matrix.job.os == 'windows-latest' }}
+        if: runner.os == 'Windows'
         run: Compress-Archive target/${{ matrix.job.target }}/release/espup${{ matrix.job.binary-postfix }} espup-${{ matrix.job.target }}.zip
       - name: Upload compressed artifact
         uses: svenstaro/upload-release-action@v2
@@ -70,15 +71,13 @@ jobs:
   publish-cratesio:
     name: Publishing to Crates.io
     needs: publish-release
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Enable caching
-        uses: Swatinem/rust-cache@v2
       - name: Cargo publish
         run: cargo publish --token ${{ secrets.CARGO_API_KEY }}

@@ -4,11 +4,10 @@ use crate::{
     error::Error,
     host_triple::HostTriple,
     toolchain::{
-        download_file,
+        Installable, download_file,
         gcc::{RISCV_GCC, XTENSA_GCC},
         github_query,
         llvm::CLANG_NAME,
-        Installable,
     },
 };
 use async_trait::async_trait;
@@ -33,15 +32,18 @@ use tokio::fs::{remove_dir_all, remove_file};
 /// Xtensa Rust Toolchain repository
 const DEFAULT_XTENSA_RUST_REPOSITORY: &str =
     "https://github.com/esp-rs/rust-build/releases/download";
+
 /// Xtensa Rust Toolchain API URL
 const XTENSA_RUST_LATEST_API_URL: &str =
     "https://api.github.com/repos/esp-rs/rust-build/releases/latest";
-const XTENSA_RUST_API_URL: &str = "https://api.github.com/repos/esp-rs/rust-build/releases";
+const XTENSA_RUST_API_URL: &str =
+    "https://api.github.com/repos/esp-rs/rust-build/releases?page=1&per_page=100";
 
 /// Xtensa Rust Toolchain version regex.
-pub const RE_EXTENDED_SEMANTIC_VERSION: &str = r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)\.(?P<subpatch>0|[1-9]\d*)?$";
-const RE_SEMANTIC_VERSION: &str =
-    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)?$";
+pub const RE_EXTENDED_SEMANTIC_VERSION: &str = r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)\.(?P<subpatch>0|[1-9]\d*)$";
+/// Matches version strings with 1-4 parts.
+pub const RE_ANY_SEMANTIC_VERSION: &str =
+    r"^(0|[1-9]\d*)(\.(0|[1-9]\d*)(\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?)?)?$";
 
 #[derive(Debug, Clone, Default)]
 pub struct XtensaRust {
@@ -71,13 +73,34 @@ pub struct XtensaRust {
 
 impl XtensaRust {
     /// Get the latest version of Xtensa Rust toolchain.
-    pub async fn get_latest_version() -> Result<String> {
-        let json = github_query(XTENSA_RUST_LATEST_API_URL)?;
-        let mut version = json["tag_name"].to_string();
+    pub async fn get_latest_version() -> Result<String, Error> {
+        debug!("Querying latest Xtensa Rust version from GitHub API");
 
+        // First, handle the spawn_blocking result
+        let query_result = tokio::task::spawn_blocking(|| github_query(XTENSA_RUST_LATEST_API_URL))
+            .await
+            .map_err(|e| {
+                Error::GithubConnectivityError(format!("Failed to query GitHub API: {e}"))
+            })?;
+
+        // Then handle the github_query result
+        let json = query_result?;
+
+        if !json.is_object() || !json["tag_name"].is_string() {
+            return Err(Error::SerializeJson);
+        }
+
+        let mut version = json["tag_name"].to_string();
         version.retain(|c| c != 'v' && c != '"');
-        Self::parse_version(&version)?;
-        debug!("Latest Xtensa Rust version: {}", version);
+
+        if !Regex::new(RE_EXTENDED_SEMANTIC_VERSION)
+            .unwrap()
+            .is_match(&version)
+        {
+            return Err(Error::InvalidVersion(version));
+        }
+
+        debug!("Latest Xtensa Rust version: {version}");
         Ok(version)
     }
 
@@ -114,48 +137,74 @@ impl XtensaRust {
         }
     }
 
-    /// Parses the version of the Xtensa toolchain.
-    pub fn parse_version(arg: &str) -> Result<String, Error> {
-        debug!("Parsing Xtensa Rust version: {}", arg);
-        let re_extended = Regex::new(RE_EXTENDED_SEMANTIC_VERSION).unwrap();
-        let re_semver = Regex::new(RE_SEMANTIC_VERSION).unwrap();
+    /// Retrieves the latest version of the Xtensa toolchain.
+    ///
+    /// Note that this function issues a GitHub API request to retrieve the latest version of the Xtensa toolchain.
+    pub fn find_latest_version_on_github(version: &str) -> Result<String, Error> {
+        debug!("Parsing Xtensa Rust version: {version}");
         let json = github_query(XTENSA_RUST_API_URL)?;
-        if re_semver.is_match(arg) {
-            let mut extended_versions: Vec<String> = Vec::new();
-            for release in json.as_array().unwrap() {
-                let tag_name = release["tag_name"].to_string().replace(['\"', 'v'], "");
-                if tag_name.starts_with(arg) {
-                    extended_versions.push(tag_name);
-                }
-            }
-            if extended_versions.is_empty() {
-                return Err(Error::InvalidVersion(arg.to_string()));
-            }
-            let mut max_version = extended_versions.pop().unwrap();
-            let mut max_subpatch = 0;
-            for version in extended_versions {
-                let subpatch: i8 = re_extended
-                    .captures(&version)
-                    .and_then(|cap| {
-                        cap.name("subpatch")
-                            .map(|subpatch| subpatch.as_str().parse().unwrap())
-                    })
-                    .unwrap();
-                if subpatch > max_subpatch {
-                    max_subpatch = subpatch;
-                    max_version = version;
-                }
-            }
-            return Ok(max_version);
-        } else if re_extended.is_match(arg) {
-            for release in json.as_array().unwrap() {
-                let tag_name = release["tag_name"].to_string().replace(['\"', 'v'], "");
-                if tag_name.starts_with(arg) {
-                    return Ok(arg.to_string());
-                }
-            }
+
+        let mut candidates: Vec<String> = Vec::new();
+        for release in json.as_array().unwrap() {
+            candidates.push(release["tag_name"].to_string().replace(['\"', 'v'], ""));
         }
-        Err(Error::InvalidVersion(arg.to_string()))
+
+        Self::find_latest_version(version, &candidates)
+    }
+
+    /// Find the latest matching version of the Xtensa toolchain.
+    ///
+    /// This function takes a version string and a list of candidate versions and returns the latest matching version.
+    /// If no matching version is found, it returns an error.
+    ///
+    /// The list of candidate versions is expected to be given in the extended semantic version format.
+    fn find_latest_version(version: &str, candidates: &[String]) -> Result<String, Error> {
+        lazy_static::lazy_static! {
+            static ref RE_EXTENDED: Regex = Regex::new(RE_EXTENDED_SEMANTIC_VERSION).unwrap();
+            static ref RE_ANY_SEMVER: Regex = Regex::new(RE_ANY_SEMANTIC_VERSION).unwrap();
+        };
+
+        if !RE_ANY_SEMVER.is_match(version) {
+            return Err(Error::InvalidVersion(version.to_string()));
+        }
+
+        let extract_version_components = |version: &str| -> (u8, u8, u8, u8) {
+            RE_EXTENDED
+                .captures(version)
+                .and_then(|cap| {
+                    let major = cap.name("major").unwrap().as_str().parse().ok()?;
+                    let minor = cap.name("minor").unwrap().as_str().parse().ok()?;
+                    let patch = cap.name("patch").unwrap().as_str().parse().ok()?;
+                    let subpatch = cap.name("subpatch").unwrap().as_str().parse().ok()?;
+                    Some((major, minor, patch, subpatch))
+                })
+                .unwrap_or_else(|| panic!("Version {version} is not in the extended semver format"))
+        };
+
+        // Match complete components: `1.8` must not match `1.82`, and a full
+        // version such as `1.82.0.1` must not match `1.82.0.10`.
+        let component_count = version.split('.').count();
+        let candidates = candidates.iter().filter(|candidate| {
+            candidate
+                .split('.')
+                .take(component_count)
+                .eq(version.split('.'))
+        });
+
+        // Now find the latest
+        let max_version = candidates
+            .map(move |candidate| {
+                let components = extract_version_components(candidate.as_str());
+
+                (candidate, components)
+            })
+            .max_by_key(|(_, components)| *components)
+            .map(|(version, _)| version.clone());
+
+        match max_version {
+            Some(version) => Ok(version),
+            None => Err(Error::VersionNotFound(version.to_string())),
+        }
     }
 
     /// Removes the Xtensa Rust toolchain.
@@ -201,10 +250,10 @@ impl Installable for XtensaRust {
             let output = String::from_utf8_lossy(&rustc_version.stdout);
             if rustc_version.status.success() && output.contains(&self.version) {
                 warn!(
-                "Previous installation of Xtensa Rust {} exists in: '{}'. Reusing this installation",
-                &self.version,
-                &self.toolchain_destination.display()
-            );
+                    "Previous installation of Xtensa Rust {} exists in: '{}'. Reusing this installation",
+                    self.version,
+                    self.toolchain_destination.display()
+                );
                 return Ok(vec![]);
             } else {
                 if !rustc_version.status.success() {
@@ -228,6 +277,15 @@ impl Installable for XtensaRust {
             let tmp_dir_path = &tmp_dir.path().display().to_string();
 
             download_file(
+                self.src_dist_url.clone(),
+                "rust-src.tar.xz",
+                tmp_dir_path,
+                true,
+                false,
+            )
+            .await?;
+
+            download_file(
                 self.dist_url.clone(),
                 "rust.tar.xz",
                 tmp_dir_path,
@@ -242,7 +300,7 @@ impl Installable for XtensaRust {
                 .arg("bash")
                 .arg(format!(
                     "{}/rust-nightly-{}/install.sh",
-                    tmp_dir_path, &self.host_triple,
+                    tmp_dir_path, self.host_triple,
                 ))
                 .arg(format!(
                     "--destdir={}",
@@ -260,18 +318,10 @@ impl Installable for XtensaRust {
                 return Err(Error::XtensaRust);
             }
 
-            download_file(
-                self.src_dist_url.clone(),
-                "rust-src.tar.xz",
-                tmp_dir_path,
-                true,
-                false,
-            )
-            .await?;
             info!("Installing 'rust-src' component for Xtensa Rust toolchain");
             if !Command::new("/usr/bin/env")
                 .arg("bash")
-                .arg(format!("{}/rust-src-nightly/install.sh", tmp_dir_path))
+                .arg(format!("{tmp_dir_path}/rust-src-nightly/install.sh"))
                 .arg(format!(
                     "--destdir={}",
                     self.toolchain_destination.display()
@@ -311,20 +361,20 @@ impl Installable for XtensaRust {
 
 #[derive(Debug, Clone)]
 pub struct RiscVTarget {
-    /// Nightly version.
-    pub nightly_version: String,
+    /// Stable Rust toolchain version.
+    pub stable_version: String,
 }
 
 impl RiscVTarget {
     /// Create a crate instance.
-    pub fn new(nightly_version: &str) -> Self {
+    pub fn new(stable_version: &str) -> Self {
         RiscVTarget {
-            nightly_version: nightly_version.to_string(),
+            stable_version: stable_version.to_string(),
         }
     }
 
     /// Uninstalls the RISC-V target.
-    pub fn uninstall(nightly_version: &str) -> Result<(), Error> {
+    pub fn uninstall(stable_version: &str) -> Result<(), Error> {
         info!("Uninstalling RISC-V target");
 
         if !Command::new("rustup")
@@ -332,7 +382,7 @@ impl RiscVTarget {
                 "target",
                 "remove",
                 "--toolchain",
-                nightly_version,
+                stable_version,
                 "riscv32imc-unknown-none-elf",
                 "riscv32imac-unknown-none-elf",
                 "riscv32imafc-unknown-none-elf",
@@ -351,21 +401,24 @@ impl RiscVTarget {
 impl Installable for RiscVTarget {
     async fn install(&self) -> Result<Vec<String>, Error> {
         info!(
-            "Installing RISC-V Rust targets ('riscv32imc-unknown-none-elf', 'riscv32imac-unknown-none-elf' and 'riscv32imafc-unknown-none-elf') for '{}' toolchain",            &self.nightly_version
+            "Installing RISC-V Rust targets ('riscv32imc-unknown-none-elf', 'riscv32imac-unknown-none-elf' and 'riscv32imafc-unknown-none-elf') for '{}' toolchain",
+            self.stable_version
         );
 
         if !Command::new("rustup")
             .args([
                 "toolchain",
                 "install",
-                &self.nightly_version,
+                &self.stable_version,
                 "--profile",
                 "minimal",
                 "--component",
                 "rust-src",
                 "--target",
                 "riscv32imc-unknown-none-elf",
+                "--target",
                 "riscv32imac-unknown-none-elf",
+                "--target",
                 "riscv32imafc-unknown-none-elf",
             ])
             .stdout(Stdio::null())
@@ -373,7 +426,7 @@ impl Installable for RiscVTarget {
             .status()?
             .success()
         {
-            return Err(Error::InstallRiscvTarget(self.nightly_version.clone()));
+            return Err(Error::InstallRiscvTarget(self.stable_version.clone()));
         }
 
         Ok(vec![]) // No exports
@@ -387,7 +440,9 @@ impl Installable for RiscVTarget {
 /// Gets the artifact extension based on the host architecture.
 fn get_artifact_extension(host_triple: &HostTriple) -> &str {
     match host_triple {
-        HostTriple::X86_64PcWindowsMsvc | HostTriple::X86_64PcWindowsGnu => "zip",
+        HostTriple::X86_64PcWindowsMsvc
+        | HostTriple::X86_64PcWindowsGnu
+        | HostTriple::Aarch64PcWindowsMsvc => "zip",
         _ => "tar.xz",
     }
 }
@@ -400,6 +455,25 @@ fn get_cargo_home() -> PathBuf {
             BaseDirs::new().unwrap().home_dir().join(".cargo").display()
         )
     }))
+}
+
+/// Validates a toolchain name as a single directory name on all supported hosts.
+pub fn validate_toolchain_name(name: &str) -> Result<String, Error> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', '\0'])
+        || name.ends_with(['.', ' '])
+    {
+        return Err(Error::InvalidToolchainName(name.to_string()));
+    }
+    Ok(name.to_string())
+}
+
+/// Gets a named toolchain path without allowing traversal outside the toolchains directory.
+pub fn get_toolchain_path(name: &str) -> Result<PathBuf, Error> {
+    let name = validate_toolchain_name(name)?;
+    Ok(get_rustup_home().join("toolchains").join(name))
 }
 
 /// Gets the default rustup home path.
@@ -439,7 +513,7 @@ pub async fn check_rust_installation() -> Result<(), Error> {
 mod tests {
     use crate::{
         logging::initialize_logger,
-        toolchain::rust::{get_cargo_home, get_rustup_home, XtensaRust},
+        toolchain::rust::{XtensaRust, get_cargo_home, get_rustup_home},
     };
     use directories::BaseDirs;
     use std::env;
@@ -448,24 +522,88 @@ mod tests {
     #[test]
     fn test_xtensa_rust_parse_version() {
         initialize_logger("debug");
-        assert_eq!(XtensaRust::parse_version("1.65.0.0").unwrap(), "1.65.0.0");
-        assert_eq!(XtensaRust::parse_version("1.65.0.1").unwrap(), "1.65.0.1");
-        assert_eq!(XtensaRust::parse_version("1.64.0.0").unwrap(), "1.64.0.0");
-        assert_eq!(XtensaRust::parse_version("1.63.0").unwrap(), "1.63.0.2");
-        assert_eq!(XtensaRust::parse_version("1.65.0").unwrap(), "1.65.0.1");
-        assert_eq!(XtensaRust::parse_version("1.64.0").unwrap(), "1.64.0.0");
-        assert!(XtensaRust::parse_version("422.0.0").is_err());
-        assert!(XtensaRust::parse_version("422.0.0.0").is_err());
-        assert!(XtensaRust::parse_version("a.1.1.1").is_err());
-        assert!(XtensaRust::parse_version("1.1.1.1.1").is_err());
-        assert!(XtensaRust::parse_version("1..1.1").is_err());
-        assert!(XtensaRust::parse_version("1._.*.1").is_err());
+        let candidates = [
+            String::from("1.64.0.0"),
+            String::from("1.65.0.0"),
+            String::from("1.65.0.1"),
+            String::from("1.65.1.0"),
+            String::from("1.82.0.3"),
+        ];
+        assert_eq!(
+            XtensaRust::find_latest_version("1.65.0.0", &candidates).unwrap(),
+            "1.65.0.0"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.65", &candidates).unwrap(),
+            "1.65.1.0"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.65.0.1", &candidates).unwrap(),
+            "1.65.0.1"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.64.0.0", &candidates).unwrap(),
+            "1.64.0.0"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.82.0", &candidates).unwrap(),
+            "1.82.0.3"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.65.0", &candidates).unwrap(),
+            "1.65.0.1"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1.64.0", &candidates).unwrap(),
+            "1.64.0.0"
+        );
+        assert_eq!(
+            XtensaRust::find_latest_version("1", &candidates).unwrap(),
+            "1.82.0.3"
+        );
+        assert!(XtensaRust::find_latest_version("1.", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("1.0.", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("1.0.0.", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("422.0.0", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("422.0.0.0", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("a.1.1.1", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("1.1.1.1.1", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("1..1.1", &candidates).is_err());
+        assert!(XtensaRust::find_latest_version("1._.*.1", &candidates).is_err());
+    }
+
+    #[test]
+    fn version_requests_match_complete_components() {
+        let candidates =
+            ["1.8.0.0", "1.80.0.0", "1.82.0.1", "1.82.0.10", "1.88.0.0"].map(String::from);
+        for (request, expected) in [
+            ("1.8", "1.8.0.0"),
+            ("1.82.0.1", "1.82.0.1"),
+            ("1.82.0", "1.82.0.10"),
+            ("1.82", "1.82.0.10"),
+            ("1", "1.88.0.0"),
+        ] {
+            assert_eq!(
+                XtensaRust::find_latest_version(request, &candidates).unwrap(),
+                expected
+            );
+        }
+        for request in ["1.82.0.2", "1.8.0.1", "1.88.0.1"] {
+            assert!(
+                matches!(XtensaRust::find_latest_version(request, &candidates),
+                Err(crate::error::Error::VersionNotFound(version)) if version == request)
+            );
+        }
+        assert!(XtensaRust::find_latest_version("1.8", &["1.82.0.1".into()]).is_err());
+        assert!(XtensaRust::find_latest_version("1.82.0.1", &["1.82.0.10".into()]).is_err());
     }
 
     #[test]
     fn test_get_cargo_home() {
         // No CARGO_HOME set
-        env::remove_var("CARGO_HOME");
+        unsafe {
+            env::remove_var("CARGO_HOME");
+        }
         assert_eq!(
             get_cargo_home(),
             BaseDirs::new().unwrap().home_dir().join(".cargo")
@@ -473,14 +611,18 @@ mod tests {
         // CARGO_HOME set
         let temp_dir = TempDir::new().unwrap();
         let cargo_home = temp_dir.path().to_path_buf();
-        env::set_var("CARGO_HOME", cargo_home.to_str().unwrap());
+        unsafe {
+            env::set_var("CARGO_HOME", cargo_home.to_str().unwrap());
+        }
         assert_eq!(get_cargo_home(), cargo_home);
     }
 
     #[test]
     fn test_get_rustup_home() {
         // No RUSTUP_HOME set
-        env::remove_var("RUSTUP_HOME");
+        unsafe {
+            env::remove_var("RUSTUP_HOME");
+        }
         assert_eq!(
             get_rustup_home(),
             BaseDirs::new().unwrap().home_dir().join(".rustup")
@@ -488,7 +630,9 @@ mod tests {
         // RUSTUP_HOME set
         let temp_dir = TempDir::new().unwrap();
         let rustup_home = temp_dir.path().to_path_buf();
-        env::set_var("RUSTUP_HOME", rustup_home.to_str().unwrap());
+        unsafe {
+            env::set_var("RUSTUP_HOME", rustup_home.to_str().unwrap());
+        }
         assert_eq!(get_rustup_home(), rustup_home);
     }
 }

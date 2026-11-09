@@ -15,6 +15,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.19.0] - 2026-10-27
+
+### Added
+- Add support for `aarch64-pc-windows-msvc` hosts (#601)
+- Install the native `aarch64-w64-mingw32` GCC build on `aarch64-pc-windows-msvc` hosts (#605)
+
+### Fixed
+- Fix `File exists (os error 17)` when `~/.espup/esp-clang` is a dangling symlink (#581)
+- Fix RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369 by updating `zip` to 9.0.5 (#590)
+- Fix RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348, RUSTSEC-2026-0349 by updating `rustls` to 0.23.46 (#590)
+- Fix RUSTSEC-2026-0381, RUSTSEC-2026-0382, RUSTSEC-2026-0383 by updating `rustls-webpki` to 0.103.16 and `webpki-roots`/`webpki-root-certs` to 1.0.10 (#594)
+- Fix RUSTSEC-2026-0386 by updating `tokio` to 1.54.1 (#600)
+- Fix RUSTSEC-2026-0385 by updating `ctutils` to 0.4.6 (#600)
+- Ignore yanked versions when checking crates.io for a new `espup` version (#597)
+- Ignore an empty `GITHUB_TOKEN` and report invalid tokens and GitHub API rate limits without retrying them (#597)
+- Query the GitHub API once instead of twice when resolving the latest Xtensa Rust version (#597)
+
+### Changed
+- Revert default GCC / Crosstools version to [`esp-15.2.0_20250920`](https://github.com/espressif/crosstool-NG/releases/tag/esp-15.2.0_20250920) (#602)
+- Update default GCC / Crosstools version to [`esp-16.1.0_20260609`](https://github.com/espressif/crosstool-NG/releases/tag/esp-16.1.0_20260609) (#605)
+
+### Removed
+
+## [0.18.0] - 2026-09-30
+
+### Added
+- Add LLVM 21 support (#564)
+- Add support for LLVM esp-22.1.4_20260825 (#577)
+
+### Fixed
+- Persist `CLANG_PATH` in the Windows user environment instead of adding the executable to `PATH` (#576).
+- Track the currently installed GCC and LLVM versions on Windows and invalidate completion state before replacing files (#576).
+- Match requested Xtensa Rust versions by complete version components (#576).
+- Report installer task panics instead of waiting indefinitely for missing results (#576).
+- Stop logging proxy URLs, which may contain credentials (#576).
+- Reject unsafe paths in stripped ZIP archives and report malformed ZIP errors without panicking (#576).
+- Reject toolchain names that could escape the installation directory (#576).
+- Resolve explicitly requested Xtensa Rust versions outside the async runtime to avoid a panic (#576).
+- Only reuse Unix GCC and LLVM installations after extraction completes successfully (#576).
+- Fix RUSTSEC-2026-0104, RUSTSEC-2026-0285 (#564, #575)
+
+### Changed
+- Updated default GCC / Crosstools version to latest, [`esp-16.2.0_20260914`](https://github.com/espressif/crosstool-NG/releases/tag/esp-16.2.0_20260914) (#577)
+
+### Removed
+- Remove unused `bytes` and `openssl` dependencies; building from source no longer requires `perl` (#579)
+
+## [0.17.1] - 2026-04-17
+
+### Fixed
+- Fix extraction of resumed downloads stored as `*.part` files by detecting the underlying archive extension (`.zip`, `.tar.gz`, `.tar.xz`) instead of failing with `unsupported_file_extension: 'part'`.
+
+## [0.17.0] - 2026-04-17
+
+### Added
+- Add ESP32-C5 support (#541)
+- Add ESP32-C61 support (#559)
+- Add a `--disable-timeouts` / `ESPUP_DISABLE_TIMEOUTS` option for long-running downloads and GitHub queries (#558)
+
+### Fixed
+- Retry and resume interrupted toolchain downloads instead of restarting them from scratch (#558)
+
+### Changed
+- Bump dependencies to fix several RUSTSECs (#540, #545, #549, #557)
+- Update MSRV to 1.88 (#540)
+- Migrate to tokyo-retries2 (#554)
+
+## [0.16.0] - 2025-09-26
+
+### Added
+- Add option to specify Crosstool-NG version, using `-c` or `--crosstools-toolchain-version` (#508)
+- Add an option for [NuShell](https://www.nushell.sh/) completion (#513)
+- Add support for LLVM esp-20.1.1_20250829 (#527)
+
+### Changed
+- Updat default GCC / Crosstools version to latest, [`esp-15.2.0_20250920`](https://github.com/espressif/crosstool-NG/releases/tag/esp-15.2.0_20250920) (#527)
+- `espup install -v` now accepts version strings with 1-4 parts. (#525)
+
+## [0.15.1] - 2025-05-19
+
+### Changed
+- Improved GitHub API error handling (#496)
+- Update `zip` dependency to 3.0.0 as 2.6.1 was yanked (#504)
+
+## [0.15.0] - 2025-04-08
+
+### Changed
+- Install `stable` Rust toolchain instead of `nightly` for RISC-V devices (#487)
+
+## [0.14.1] - 2025-03-04
+
+### Added
+- Add support for LLVM esp-19.1.2_20250225 (#477, #479)
+
+### Fixed
+- Return an error if GET request fails (#471)
+- Fix RISC-V installation error (#480)
+
+## [0.14.0] - 2024-12-17
+
+### Added
+- Smoother large file download&proxy support (#463)
+- Add GitHub API errors to clarify what failed (#464)
+
+### Fixed
+- When queriying GitHub for the list of releases, retrieve more items (#462)
+
+### Changed
+- `espup` now prints why an install step failed (#461)
+
+## [0.13.0] - 2024-10-30
+
+### Changed
+- Update GCC version to 14.2.0 (#442)
+- Update LLVM version to esp-18.1.2_20240912 (#452)
+
+## [0.12.2] - 2024-07-18
+
+### Fixed
+- Fix extended LLVM mode regression for LLVM versions < 17 introduced by #432. (#437)
+
+## [0.12.1] - 2024-07-15
+
+### Fixed
+- Make both `libclang.so` available again when installing the extended LLVM for LLVM versions >= 17 (#432)
+
 ## [0.12.0] - 2024-06-12
 
 ### Added
@@ -125,7 +251,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2022-10-07
 
-[Unreleased]: https://github.com/esp-rs/espup/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/esp-rs/espup/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/esp-rs/espup/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/esp-rs/espup/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/esp-rs/espup/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/esp-rs/espup/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/esp-rs/espup/compare/v0.15.1...v0.16.0
+[0.15.1]: https://github.com/esp-rs/espup/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/esp-rs/espup/compare/v0.14.1...v0.15.0
+[0.14.1]: https://github.com/esp-rs/espup/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/esp-rs/espup/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/esp-rs/espup/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/esp-rs/espup/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/esp-rs/espup/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/esp-rs/espup/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/esp-rs/espup/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/esp-rs/espup/compare/v0.9.0...v0.10.0
